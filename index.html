@@ -2,25 +2,27 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>HTML Cleaner — Custom Script</title>
+  <title>HTML Cleaner — jQuery (fixed)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;gap:16px;padding:20px;background:#f6f7fb}
-    .drop{width:720px;min-height:160px;border:3px dashed #bbb;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
-    .drop.drag{border-color:#6a9bff;box-shadow:0 0 12px rgba(106,155,255,0.2)}
-    textarea{width:720px;height:240px;font-family:monospace;font-size:13px;border-radius:8px;border:1px solid #ccc;padding:8px}
-    .controls{display:flex;gap:8px}
-    button{padding:8px 14px;border:1px solid #aaa;border-radius:8px;background:#fff;cursor:pointer}
-    .log{width:720px;max-height:180px;overflow:auto;background:#fff;padding:8px;border-radius:8px;border:1px solid #ddd;font-family:monospace;font-size:13px}
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px;background:#f6f7fb;color:#111}
+    .drop{width:780px;min-height:160px;border:3px dashed #bbb;border-radius:10px;background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .drop.drag{border-color:#4a90e2;box-shadow:0 8px 30px rgba(74,144,226,.12)}
+    .controls{display:flex;gap:8px;align-items:center}
+    button{padding:8px 12px;border-radius:8px;border:1px solid #cfcfcf;background:#fff;cursor:pointer}
+    textarea{width:780px;height:260px;font-family:monospace;font-size:13px;border-radius:8px;border:1px solid #ddd;padding:8px;resize:vertical}
+    .log{width:780px;max-height:180px;overflow:auto;background:#fff;padding:8px;border-radius:8px;border:1px solid #e6e7ee;font-family:monospace;font-size:13px}
     .small{font-size:13px;color:#666}
   </style>
+
   <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
 </head>
 <body>
-  <h2>HTML Cleaner with Custom Script</h2>
+  <h2>HTML Cleaner — drag & drop (jQuery)</h2>
 
-  <div class="drop" id="drop">Drop .html files or click to select</div>
+  <div class="drop" id="drop">Drop .html files here or click to select</div>
 
   <div class="controls">
     <input id="fileInput" type="file" accept=".html,.htm" multiple style="display:none">
@@ -29,124 +31,262 @@
     <span class="small" id="count">0 files queued</span>
   </div>
 
-  <textarea id="scriptArea"></textarea>
+  <textarea id="scriptArea" spellcheck="false"></textarea>
+
   <div class="log" id="log"></div>
 
 <script>
-// --- default script: user's cleaning code
+/* Fixed webapp:
+ - more robust HTML detection (filename + content sniff)
+ - evaluates user-provided function (default included)
+ - accepts non-latin filenames
+ - queues files reliably, shows progress
+*/
+
+// default transform function (same logic you asked for)
 const defaultScript = `
 (function ($container) {
-  // p with { text } → h3
+  // remove head/meta/style if present in fragments (best-effort)
+  $container.find('head,meta,style').remove();
+
+  // { ... } -> h3
   $container.find('p').each(function(){
-    let txt = $(this).text().trim();
-    if (/^\\{.*\\}$/.test(txt)) {
-      $('<h3/>').text(txt.replace(/^\\{|\\}$/g,'').trim()).replaceAll(this);
+    const t = $(this).text().trim();
+    if (/^\\{.*\\}$/.test(t)) {
+      $('<h3/>').text(t.replace(/^\\{|\\}$/g,'').trim()).replaceAll(this);
     }
   });
 
-  // p with "Глава" → h2
+  // p starting with "Глава" -> h2 (preserve inner HTML)
   $container.find('p').each(function(){
-    let txt = $(this).text().trim();
-    if (/^Глава/.test(txt)) {
-      const $h2 = $('<h2/>').text(txt);
+    const t = $(this).text().trim();
+    if (/^Глава/.test(t)) {
+      const $h2 = $('<h2/>').html($(this).html());
       $(this).replaceWith($h2);
     }
   });
 
-  // wrap numbers
-  function wrapNumbers(node){
-    if(node.nodeType===3){
-      let v=node.nodeValue;
-      if(/\\d+/.test(v)){
-        let span=document.createElement('span');
-        span.innerHTML=v.replace(/(\\d+)/g,'<span class="nmbr">$1</span>');
-        node.replaceWith(...span.childNodes);
+  // wrap numbers in text nodes
+  function wrapNumbersNode(node){
+    if(node.nodeType === 3){
+      const v = node.nodeValue;
+      if(/\\d+/.test(v)) {
+        const tmp = document.createElement('span');
+        tmp.innerHTML = v.replace(/(\\d+)/g,'<span class="nmbr">$1</span>');
+        $(node).replaceWith($(tmp).contents());
       }
-    } else if(node.nodeType===1){
-      $(node).contents().each((_,c)=>wrapNumbers(c));
+    } else if(node.nodeType === 1) {
+      if (['SCRIPT','STYLE','CODE','PRE','NOSCRIPT'].includes(node.tagName)) return;
+      $(node).contents().each((_,c)=>wrapNumbersNode(c));
     }
   }
-  $container.contents().each((_,c)=>wrapNumbers(c));
+  $container.contents().each((_,c)=>wrapNumbersNode(c));
 
-  // fix IMG src
+  // fix img src prefix
   $container.find('img').each(function(){
-    let src=$(this).attr('src')||'';
-    let fn=src.split(/[?#]/)[0].split('/').pop()||'';
-    let type='D';
-    if(/\\.gif$/i.test(fn)) type='A';
-    else if(/^img_/i.test(fn)) type='B';
-    else if(/\\.png$/i.test(fn)) type='C';
-    $(this).attr('src','./assets/img/'+type+'/'+src);
+    const src = $(this).attr('src') || '';
+    const filename = (src.split(/[?#]/)[0].split('/').pop()||'').toLowerCase();
+    let type = 'D';
+    if(/\\.gif$/i.test(filename)) type = 'A';
+    else if(/^img_/i.test(filename)) type = 'B';
+    else if(/\\.png$/i.test(filename)) type = 'C';
+    $(this).attr('src', './assets/img/' + type + '/' + src);
   });
 
-  // chapters
-  let $new = $('<div/>',{id:'text',class:'text1'});
-  let index=-1,$chapter=null;
-  $container.contents().each(function(){
-    if(this.nodeType===1 && this.tagName==='H2' && /^Глава/.test($(this).text().trim())){
-      index++;
-      $chapter=$('<div/>',{class:'text chapter'+index}).append('<span id="start"></span>');
-      $new.append($chapter);
-      $chapter.append(this);
+  // split into chapters (H2 that starts with "Глава")
+  const containerChildren = $container.contents().toArray();
+  const wrapper = $('<div id="text" class="text1"></div>');
+  let chapterIndex = -1;
+  let $chapter = null;
+  containerChildren.forEach(node => {
+    if(node.nodeType === 1 && node.tagName === 'H2' && /^Глава/.test($(node).text().trim())){
+      chapterIndex++;
+      $chapter = $('<div/>',{class:'text chapter' + chapterIndex}).append('<span id="start"></span>');
+      wrapper.append($chapter);
+      $chapter.append(node);
     } else {
-      if($chapter) $chapter.append(this); else $new.append(this);
+      if($chapter) $chapter.append(node);
+      else wrapper.append(node);
     }
   });
-  $new.find('div.text').append('<span id="end"></span>');
-  return $new.prop('outerHTML');
-})
-`;
+  // append end spans to all chapters
+  wrapper.find('div.text').append('<span id="end"></span>');
 
-$('#scriptArea').val(defaultScript.trim());
-
-let files=[];
-
-function logMsg(...t){ $('#log').append(t.join(' ')+'<br>').scrollTop($('#log')[0].scrollHeight); }
-
-$('#selectBtn').on('click',()=>$('#fileInput').click());
-$('#fileInput').on('change',e=>{
-  addFiles([...e.target.files]); e.target.value='';
+  return wrapper.prop('outerHTML');
 });
+`.trim();
 
-$('#drop').on('click',()=>$('#fileInput').click())
-.on('dragenter dragover',e=>{e.preventDefault();$('#drop').addClass('drag');})
-.on('dragleave drop',e=>{e.preventDefault();$('#drop').removeClass('drag');})
-.on('drop',e=>{addFiles([...e.originalEvent.dataTransfer.files]);});
+$('#scriptArea').val(defaultScript);
 
-function addFiles(list){
-  list.forEach(f=>{
-    if(/\\.html?$/i.test(f.name)){ files.push(f); logMsg('Queued:',f.name);}
-    else logMsg('Skipped:',f.name);
-  });
-  $('#count').text(files.length+' files queued');
+let files = [];
+const $log = $('#log');
+const $count = $('#count');
+
+function logMsg(...parts){
+  $log.append(parts.join(' ') + '<br>');
+  $log[0].scrollTop = $log[0].scrollHeight;
 }
 
-$('#processBtn').on('click',async()=>{
-  if(!files.length){logMsg('No files queued');return;}
-  $('#processBtn').prop('disabled',true);
-  const zip=new JSZip();
-  const userScript=$('#scriptArea').val();
-  const fn = eval(userScript); // function($container) { ... }
+$('#selectBtn').on('click', ()=>$('#fileInput').click());
+$('#drop').on('click', ()=>$('#fileInput').click());
 
-  for(const f of files){
-    try{
-      const txt=await f.text();
-      const parser=new DOMParser();
-      const doc=parser.parseFromString(txt,'text/html');
-      doc.querySelectorAll('head,meta,style').forEach(e=>e.remove());
-      const raw=(doc.body&&doc.body.innerHTML)||'';
-      const $container=$('<div/>').html(raw);
-      const out=fn($container); 
-      const name=f.name.replace(/\\.(html?|htm)$/i,'')+'.html';
-      zip.file(name,out);
-      logMsg('Processed:',f.name);
-    }catch(err){logMsg('Error:',f.name,err);}
+$('#fileInput').on('change', e => {
+  const list = Array.from(e.target.files || []);
+  addFiles(list);
+  e.target.value = '';
+});
+
+// drag/drop
+$('#drop')
+  .on('dragenter dragover', e => { e.preventDefault(); $('#drop').addClass('drag'); })
+  .on('dragleave dragend drop', e => { e.preventDefault(); $('#drop').removeClass('drag'); })
+  .on('drop', e => {
+    e.preventDefault();
+    const dt = e.originalEvent && e.originalEvent.dataTransfer;
+    const list = dt ? Array.from(dt.files || []) : [];
+    addFiles(list);
+  });
+
+// robust html detection
+function looksLikeHtmlByName(file){
+  const name = (file && file.name) ? String(file.name).trim().toLowerCase() : '';
+  if (!name) return false;
+  // standard ext
+  if (/\.(html?|htm)$/i.test(name)) return true;
+  // some filenames might include multiple dots or weird unicode dot; check substring
+  if (name.indexOf('.html') !== -1 || name.indexOf('.htm') !== -1) return true;
+  // check mime
+  if (file.type && /html/.test(file.type)) return true;
+  return false;
+}
+
+// try to sniff file content if name is ambiguous
+async function looksLikeHtmlByContent(file){
+  try{
+    const txt = await file.text();
+    const sample = txt.slice(0,2000).toLowerCase();
+    if (sample.indexOf('<!doctype html') !== -1) return true;
+    if (sample.indexOf('<html') !== -1) return true;
+    if (sample.indexOf('<head') !== -1 && sample.indexOf('<body') !== -1) return true;
+    // some fragments might lack html/head but still contain tags
+    if (/<[a-z][\s\S]*>/i.test(sample)) return true;
+    return false;
+  }catch(e){
+    return false;
   }
-  const blob=await zip.generateAsync({type:'blob'});
-  saveAs(blob,'cleaned_html.zip');
-  logMsg('ZIP ready');
-  files=[];$('#count').text('0 files queued');
-  $('#processBtn').prop('disabled',false);
+}
+
+// addFiles: accept files and decide whether to queue (async)
+async function addFiles(list){
+  for (const f of list){
+    if (!f || !f.name) { logMsg('Skipped (bad file):', String(f)); continue; }
+    // already queued?
+    if (files.some(x => x.name === f.name && x.size === f.size && x.lastModified === f.lastModified)){
+      logMsg('Already queued:', f.name);
+      continue;
+    }
+
+    if (looksLikeHtmlByName(f)){
+      files.push(f);
+      logMsg('Queued:', f.name);
+      $count.text(files.length + ' files queued');
+      continue;
+    }
+
+    // ambiguous: sniff content
+    logMsg('Checking content for:', f.name);
+    const isHtml = await looksLikeHtmlByContent(f);
+    if (isHtml){
+      files.push(f);
+      logMsg('Queued (by content):', f.name);
+      $count.text(files.length + ' files queued');
+    } else {
+      logMsg('Skipped (not HTML):', f.name);
+    }
+  }
+}
+
+// Evaluate user script safely (returns a function or throws)
+function getUserFunction(src){
+  // We expect src to evaluate to a function expression: (function($container){...})
+  // or a function declaration function fn($container){...} ; we wrap into return to obtain it.
+  try{
+    const fn = new Function('return (' + src + ')')();
+    if (typeof fn !== 'function') throw new Error('Script did not evaluate to a function');
+    return fn;
+  }catch(err){
+    throw new Error('Invalid script: ' + (err && err.message ? err.message : String(err)));
+  }
+}
+
+$('#processBtn').on('click', async function(){
+  if (!files.length){ logMsg('No files queued'); return; }
+  $(this).prop('disabled', true);
+  logMsg('Processing', files.length, 'files...');
+
+  // get user function
+  let userScript = $('#scriptArea').val().trim();
+  let fn;
+  try {
+    fn = getUserFunction(userScript || defaultScript);
+  } catch (err) {
+    logMsg('Error evaluating script:', err.message);
+    $(this).prop('disabled', false);
+    return;
+  }
+
+  const zip = new JSZip();
+  for (const f of files){
+    try{
+      const text = await f.text();
+      // parse and remove head/meta/style as pre-step
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(text, 'text/html');
+      $(doc).find('head,meta,style').remove();
+      const raw = (doc.body && doc.body.innerHTML) ? doc.body.innerHTML : doc.documentElement.innerHTML || text;
+
+      const $container = $('<div/>').html(raw);
+
+      // call user function; allow it to return string, DOM node, jQuery object
+      let result;
+      try {
+        result = fn($container);
+      } catch (err) {
+        // if function is async (returns Promise), await it
+        if (err instanceof Promise) result = await err;
+        else throw err;
+      }
+      // if function returned a Promise, await it
+      if (result && typeof result.then === 'function') result = await result;
+
+      let outHtml = '';
+      if (typeof result === 'string') outHtml = result;
+      else if (result && result.jquery) outHtml = result.prop('outerHTML') || $('<div/>').append(result.clone()).html();
+      else if (result && result.outerHTML) outHtml = result.outerHTML;
+      else outHtml = $container.prop('outerHTML');
+
+      // ensure at least something
+      if (!outHtml) outHtml = $container.prop('outerHTML') || '<div id="text" class="text1"></div>';
+
+      const name = f.name.replace(/\.(html?|htm)$/i, '') + '.html';
+      zip.file(name, outHtml);
+      logMsg('Processed:', f.name);
+    }catch(err){
+      logMsg('Error processing', f.name, ':', (err && err.message) ? err.message : err);
+    }
+  }
+
+  try{
+    const blob = await zip.generateAsync({type:'blob'});
+    saveAs(blob, 'cleaned_html.zip');
+    logMsg('ZIP ready: cleaned_html.zip');
+  }catch(err){
+    logMsg('Error generating ZIP:', err && err.message ? err.message : err);
+  }
+
+  files = [];
+  $count.text('0 files queued');
+  $(this).prop('disabled', false);
 });
 </script>
 </body>
