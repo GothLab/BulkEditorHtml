@@ -1,0 +1,153 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>HTML Cleaner — Custom Script</title>
+  <style>
+    body{font-family:sans-serif;display:flex;flex-direction:column;align-items:center;gap:16px;padding:20px;background:#f6f7fb}
+    .drop{width:720px;min-height:160px;border:3px dashed #bbb;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#fff;cursor:pointer}
+    .drop.drag{border-color:#6a9bff;box-shadow:0 0 12px rgba(106,155,255,0.2)}
+    textarea{width:720px;height:240px;font-family:monospace;font-size:13px;border-radius:8px;border:1px solid #ccc;padding:8px}
+    .controls{display:flex;gap:8px}
+    button{padding:8px 14px;border:1px solid #aaa;border-radius:8px;background:#fff;cursor:pointer}
+    .log{width:720px;max-height:180px;overflow:auto;background:#fff;padding:8px;border-radius:8px;border:1px solid #ddd;font-family:monospace;font-size:13px}
+    .small{font-size:13px;color:#666}
+  </style>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+</head>
+<body>
+  <h2>HTML Cleaner with Custom Script</h2>
+
+  <div class="drop" id="drop">Drop .html files or click to select</div>
+
+  <div class="controls">
+    <input id="fileInput" type="file" accept=".html,.htm" multiple style="display:none">
+    <button id="selectBtn">Select files</button>
+    <button id="processBtn">Process & Download ZIP</button>
+    <span class="small" id="count">0 files queued</span>
+  </div>
+
+  <textarea id="scriptArea"></textarea>
+  <div class="log" id="log"></div>
+
+<script>
+// --- default script: user's cleaning code
+const defaultScript = `
+(function ($container) {
+  // p with { text } → h3
+  $container.find('p').each(function(){
+    let txt = $(this).text().trim();
+    if (/^\\{.*\\}$/.test(txt)) {
+      $('<h3/>').text(txt.replace(/^\\{|\\}$/g,'').trim()).replaceAll(this);
+    }
+  });
+
+  // p with "Глава" → h2
+  $container.find('p').each(function(){
+    let txt = $(this).text().trim();
+    if (/^Глава/.test(txt)) {
+      const $h2 = $('<h2/>').text(txt);
+      $(this).replaceWith($h2);
+    }
+  });
+
+  // wrap numbers
+  function wrapNumbers(node){
+    if(node.nodeType===3){
+      let v=node.nodeValue;
+      if(/\\d+/.test(v)){
+        let span=document.createElement('span');
+        span.innerHTML=v.replace(/(\\d+)/g,'<span class="nmbr">$1</span>');
+        node.replaceWith(...span.childNodes);
+      }
+    } else if(node.nodeType===1){
+      $(node).contents().each((_,c)=>wrapNumbers(c));
+    }
+  }
+  $container.contents().each((_,c)=>wrapNumbers(c));
+
+  // fix IMG src
+  $container.find('img').each(function(){
+    let src=$(this).attr('src')||'';
+    let fn=src.split(/[?#]/)[0].split('/').pop()||'';
+    let type='D';
+    if(/\\.gif$/i.test(fn)) type='A';
+    else if(/^img_/i.test(fn)) type='B';
+    else if(/\\.png$/i.test(fn)) type='C';
+    $(this).attr('src','./assets/img/'+type+'/'+src);
+  });
+
+  // chapters
+  let $new = $('<div/>',{id:'text',class:'text1'});
+  let index=-1,$chapter=null;
+  $container.contents().each(function(){
+    if(this.nodeType===1 && this.tagName==='H2' && /^Глава/.test($(this).text().trim())){
+      index++;
+      $chapter=$('<div/>',{class:'text chapter'+index}).append('<span id="start"></span>');
+      $new.append($chapter);
+      $chapter.append(this);
+    } else {
+      if($chapter) $chapter.append(this); else $new.append(this);
+    }
+  });
+  $new.find('div.text').append('<span id="end"></span>');
+  return $new.prop('outerHTML');
+})
+`;
+
+$('#scriptArea').val(defaultScript.trim());
+
+let files=[];
+
+function logMsg(...t){ $('#log').append(t.join(' ')+'<br>').scrollTop($('#log')[0].scrollHeight); }
+
+$('#selectBtn').on('click',()=>$('#fileInput').click());
+$('#fileInput').on('change',e=>{
+  addFiles([...e.target.files]); e.target.value='';
+});
+
+$('#drop').on('click',()=>$('#fileInput').click())
+.on('dragenter dragover',e=>{e.preventDefault();$('#drop').addClass('drag');})
+.on('dragleave drop',e=>{e.preventDefault();$('#drop').removeClass('drag');})
+.on('drop',e=>{addFiles([...e.originalEvent.dataTransfer.files]);});
+
+function addFiles(list){
+  list.forEach(f=>{
+    if(/\\.html?$/i.test(f.name)){ files.push(f); logMsg('Queued:',f.name);}
+    else logMsg('Skipped:',f.name);
+  });
+  $('#count').text(files.length+' files queued');
+}
+
+$('#processBtn').on('click',async()=>{
+  if(!files.length){logMsg('No files queued');return;}
+  $('#processBtn').prop('disabled',true);
+  const zip=new JSZip();
+  const userScript=$('#scriptArea').val();
+  const fn = eval(userScript); // function($container) { ... }
+
+  for(const f of files){
+    try{
+      const txt=await f.text();
+      const parser=new DOMParser();
+      const doc=parser.parseFromString(txt,'text/html');
+      doc.querySelectorAll('head,meta,style').forEach(e=>e.remove());
+      const raw=(doc.body&&doc.body.innerHTML)||'';
+      const $container=$('<div/>').html(raw);
+      const out=fn($container); 
+      const name=f.name.replace(/\\.(html?|htm)$/i,'')+'.html';
+      zip.file(name,out);
+      logMsg('Processed:',f.name);
+    }catch(err){logMsg('Error:',f.name,err);}
+  }
+  const blob=await zip.generateAsync({type:'blob'});
+  saveAs(blob,'cleaned_html.zip');
+  logMsg('ZIP ready');
+  files=[];$('#count').text('0 files queued');
+  $('#processBtn').prop('disabled',false);
+});
+</script>
+</body>
+</html>
